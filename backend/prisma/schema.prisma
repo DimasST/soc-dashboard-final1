@@ -1,0 +1,99 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String     @id @default(cuid())
+  username        String?    @unique
+  email           String     @unique
+  password        String?
+  name            String?
+  role            String     @default("user")
+  isActivated     Boolean    @default(false)
+  activationToken String?
+  activationTime  DateTime?
+  isTrial         Boolean    @default(false)
+  subscriptionDurationMinutes Int?
+
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  logs            UserLog[]
+  subscriptionProfiles SubscriptionProfile[]
+}
+
+
+model SubscriptionProfile {
+  id           String   @id @default(cuid())
+  plan         String
+  price        Int
+  companyName  String
+  fullName     String
+  city         String
+  country      String
+  email        String?
+  createdAt    DateTime @default(now())
+
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id])
+
+  payments     Payment[]
+}
+
+model sensors {
+  id        Int       @id @default(autoincrement())
+  objid     Int?
+  device    String?
+  sensor    String?
+  lastvalue String?
+  status    String?
+  message   String?
+  timestamp DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model sensor_logs {
+  id        Int       @id @default(autoincrement())
+  device    String?
+  sensor    String?
+  value     String?
+  timestamp DateTime? @default(now()) @db.Timestamptz(6)
+}
+
+model UserLog {
+  id        Int      @id @default(autoincrement())
+  userId    String?
+  username  String?
+  action    String
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user      User?    @relation(fields: [userId], references: [id])
+}
+
+model Device {
+  id        String   @id @default(cuid())
+  prtgId    String?  // objid dari PRTG (boleh null kalau manual tambah device)
+  name      String
+  type      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Payment {
+  id        String   @id @default(cuid())
+  orderId   String   @unique
+  package   String
+  price     Int
+  status    String   @default("pending") // pending | paid | expired
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  profileId String?    // <- jadikan optional
+  profile   SubscriptionProfile? @relation(fields: [profileId], references: [id])
+}
