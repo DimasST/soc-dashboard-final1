@@ -1,14 +1,22 @@
-// components/AddDevice.tsx
 'use client';
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 
-export default function AddDeviceForm({ onSubmit, onCancel }) {
+export default function AddDeviceForm({ onCancel }) {
   const [name, setName] = useState('');
   const [host, setHost] = useState('');
   const [parentId, setParentId] = useState(''); 
-
   const [groups, setGroups] = useState<{ objid: string; group: string }[]>([]);
+  const [userId, setUserId] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Ambil userId dari localStorage
+    const storedUser = localStorage.getItem('user');
+    if (storedUser) {
+      const user = JSON.parse(storedUser);
+      setUserId(user.id);
+    }
+  }, []);
 
   useEffect(() => {
     async function fetchGroups() {
@@ -18,7 +26,6 @@ export default function AddDeviceForm({ onSubmit, onCancel }) {
 
         let groupList: { objid: string; group: string }[] = [];
 
-        // ✅ Normalisasi hasil API biar selalu dapat objid + group
         if (Array.isArray(data.groups)) {
           groupList = data.groups.map((g: any) => ({
             objid: String(g.objid),
@@ -33,7 +40,7 @@ export default function AddDeviceForm({ onSubmit, onCancel }) {
 
         setGroups(groupList);
         if (groupList.length > 0) {
-          setParentId(groupList[0].objid); // default parent ID = group pertama
+          setParentId(groupList[0].objid);
         }
       } catch (err) {
         console.error('Error fetching groups:', err);
@@ -42,13 +49,39 @@ export default function AddDeviceForm({ onSubmit, onCancel }) {
     fetchGroups();
   }, []);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !host.trim() || !parentId.trim()) {
       alert('⚠️ Name, Host, dan Parent Group wajib diisi!');
       return;
     }
-    onSubmit(name.trim(), host.trim(), parentId.trim());
+    if (!userId) {
+      alert('⚠️ User belum login!');
+      return;
+    }
+
+    try {
+      const res = await axios.post('http://localhost:3001/api/devices', {
+        name: name.trim(),
+        host: host.trim(),
+        parentId: parentId.trim(),
+        userId,
+        // ⚡ tidak kirim templateId → backend pakai env PRTG_DEVICE_TEMPLATE_ID
+      });
+
+      if (res.data.success) {
+        alert('✅ Device berhasil ditambahkan!');
+        setName('');
+        setHost('');
+        setParentId(groups.length > 0 ? groups[0].objid : '');
+        onCancel(); // tutup modal / form setelah sukses
+      } else {
+        alert('❌ Gagal menambahkan device: ' + (res.data.error || 'Unknown error'));
+      }
+    } catch (err: any) {
+      console.error('Error add device:', err);
+      alert('❌ Error add device: ' + (err.response?.data?.error || err.message));
+    }
   };
 
   return (

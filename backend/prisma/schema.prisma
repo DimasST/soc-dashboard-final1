@@ -4,7 +4,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  url      =env("DATABASE_URL")
 }
 
 model User {
@@ -24,9 +24,10 @@ model User {
   updatedAt       DateTime   @updatedAt
 
   logs            UserLog[]
-  subscriptionProfiles SubscriptionProfile[]
+  subscriptionProfile SubscriptionProfile?  // ⬅️ hanya satu aktif
+  devices         Device[] // ⬅️ relasi ke device     
+  sensor          Sensor[]            
 }
-
 
 model SubscriptionProfile {
   id           String   @id @default(cuid())
@@ -39,29 +40,54 @@ model SubscriptionProfile {
   email        String?
   createdAt    DateTime @default(now())
 
-  userId       String?
-  user         User?    @relation(fields: [userId], references: [id])
+  userId       String?   @unique
+  user         User?     @relation(fields: [userId], references: [id])
 
   payments     Payment[]
 }
 
-model sensors {
-  id        Int       @id @default(autoincrement())
-  objid     Int?
-  device    String?
-  sensor    String?
-  lastvalue String?
-  status    String?
-  message   String?
-  timestamp DateTime? @default(now()) @db.Timestamptz(6)
+model Device {
+  id        String   @id @default(cuid())
+  prtgId    String?  // objid dari PRTG
+  name      String
+  type      String?
+  host      String?   // 👈 tambahin
+  parentId  String?   // 👈 tambahin
+  status    Int? 
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relasi ke user
+  userId String
+  user   User @relation(fields: [userId], references: [id])
+
+  sensors Sensor[]
 }
 
-model sensor_logs {
-  id        Int       @id @default(autoincrement())
-  device    String?
-  sensor    String?
+model Sensor {
+  id        String   @id @default(cuid())
+  name      String
+  type      String
+  deviceId  String
+  userId    String
+  prtgId    String
+  status    String
+  lastValue String?
+  message   String?
+  createdAt DateTime @default(now())
+  logs      SensorLog[]
+  device    Device   @relation(fields: [deviceId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+}
+
+
+model SensorLog {
+  id        Int      @id @default(autoincrement())
   value     String?
-  timestamp DateTime? @default(now()) @db.Timestamptz(6)
+  createdAt DateTime @default(now())
+
+  sensorId  String
+  sensor    Sensor @relation(fields: [sensorId], references: [id])
 }
 
 model UserLog {
@@ -76,15 +102,6 @@ model UserLog {
   user      User?    @relation(fields: [userId], references: [id])
 }
 
-model Device {
-  id        String   @id @default(cuid())
-  prtgId    String?  // objid dari PRTG (boleh null kalau manual tambah device)
-  name      String
-  type      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-
 model Payment {
   id        String   @id @default(cuid())
   orderId   String   @unique
@@ -94,6 +111,6 @@ model Payment {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  profileId String?    // <- jadikan optional
+  profileId String?
   profile   SubscriptionProfile? @relation(fields: [profileId], references: [id])
 }

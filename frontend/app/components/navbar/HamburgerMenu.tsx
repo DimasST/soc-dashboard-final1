@@ -1,29 +1,26 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import Image from "next/image";
-import { useSession, signOut } from "next-auth/react";
+import { signOut } from "next-auth/react";
 
-interface UserSession {
-  id?: string;
-  name?: string;
-  email?: string;
-  role?: "superadmin" | "admin" | "user";
-}
-
-interface CustomSession {
-  user?: UserSession;
+// Custom hook untuk ambil user dari localStorage
+function useUser () {
+  const [user, setUser ] = useState(null);
+  useEffect(() => {
+    const stored = localStorage.getItem("user");
+    if (stored) setUser (JSON.parse(stored));
+  }, []);
+  return user;
 }
 
 export default function HamburgerMenu() {
-  const { data: sessionData } = useSession();
-  const session = sessionData as CustomSession;
-  const [isOpen, setIsOpen] = useState(false);
+  const user = useUser ();
+  const role = user?.role ?? null;
   const pathname = usePathname();
-
-  const role = session?.user?.role ?? null;
+  const [isOpen, setIsOpen] = useState(false);
 
   const baseMenu = [
     { href: "/dashboard", label: "Dashboard" },
@@ -34,16 +31,17 @@ export default function HamburgerMenu() {
     { href: "/account", label: "Account" },
   ];
 
-  const userManagement = { href: "/user-management", label: "User Managements" };
+  const userManagement = { href: "/user-management", label: "User  Managements" };
   const deviceManagement = { href: "/device-management", label: "Device Managements" };
+  const sensorManagement = { href: "/sensor-management", label: "Sensor Managements" };
   const ticket = { href: "/ticket", label: "Ticket" };
 
   let menuItems = [...baseMenu];
 
   if (role === "superadmin") {
-    menuItems.push(ticket, userManagement, deviceManagement);
+    menuItems.push(ticket, userManagement, deviceManagement, sensorManagement);
   } else if (role === "admin") {
-    menuItems.push(ticket, deviceManagement);
+    menuItems.push(ticket, deviceManagement, sensorManagement);
   } else if (role === "user") {
     // Tidak menambah apapun
   } else {
@@ -114,9 +112,9 @@ export default function HamburgerMenu() {
 
         {/* Footer sidebar */}
         <div className="p-6 border-t border-white/10 flex justify-between items-center">
-          {session?.user && (
+          {user && (
             <div className="text-sm opacity-90">
-              <div>{session.user.name ?? session.user.email}</div>
+              <div>{user.username ?? user.email}</div>
               <div className="capitalize">Role: {role ?? "-"}</div>
             </div>
           )}
@@ -125,8 +123,8 @@ export default function HamburgerMenu() {
           <button
             onClick={async () => {
               try {
-                const userId = session?.user?.id;
-                const username = session?.user?.name ?? session?.user?.email ?? "";
+                const userId = user?.id;
+                const username = user?.username ?? user?.email ?? "";
 
                 await fetch("http://localhost:3001/logout", {
                   method: "POST",
@@ -134,9 +132,11 @@ export default function HamburgerMenu() {
                   body: JSON.stringify({ userId, username }),
                 });
 
+                localStorage.removeItem("user"); // hapus user dari localStorage
                 await signOut({ callbackUrl: "/login" });
               } catch (error) {
                 console.error("Logout error:", error);
+                localStorage.removeItem("user");
                 await signOut({ callbackUrl: "/login" });
               }
 

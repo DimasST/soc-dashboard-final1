@@ -58,14 +58,14 @@ let coreApi = new midtransClient.CoreApi({
 });
 
 
-// Add device (PRTG)
-// -- Add/replace this route in index.js --
-
 app.post("/api/devices", async (req, res) => {
-  const { name, host, parentId, templateId } = req.body;
+  const { name, host, parentId, templateId, userId } = req.body;
 
   if (!name || !host || !parentId) {
-    return res.status(400).json({ error: "Name, Host, dan Parent Group ID wajib diisi" });
+    return res.status(400).json({ error: "Name, host, dan parentId wajib diisi" });
+  }
+  if (!userId) {
+    return res.status(400).json({ error: "User ID wajib disertakan" });
   }
 
   try {
@@ -74,51 +74,43 @@ app.post("/api/devices", async (req, res) => {
       return res.status(400).json({ error: "PRTG_DEVICE_TEMPLATE_ID belum diset dan templateId tidak dikirim" });
     }
 
-    // 1) CLONE template device ke target group (HARUS pakai GET)
-    const dupUrl = `${PRTG_HOST}/api/duplicateobject.htm`;
-    const dupParams = {
-      id: TEMPLATE_ID,        // device yang jadi template
-      targetid: parentId,     // group tujuan
-      name: name.trim(),      // nama device baru
-      username: PRTG_USERNAME,
-      passhash: PRTG_PASSHASH,
-    };
-
-    // tangkap redirect utk dapat new objid (PRTG kirim Location ke URL objek baru)
+    // 1) Clone template device
     let newDeviceId = null;
     try {
-      const dupResp = await axios.get(dupUrl, {
-        params: dupParams,
+      const dupResp = await axios.get(`${PRTG_HOST}/api/duplicateobject.htm`, {
+        params: {
+          id: TEMPLATE_ID,
+          targetid: parentId,
+          name: name.trim(),
+          username: PRTG_USERNAME,
+          passhash: PRTG_PASSHASH,
+        },
         maxRedirects: 0,
         validateStatus: (s) => s >= 200 && s < 400,
       });
 
       const loc = dupResp.headers?.location || dupResp.request?.res?.headers?.location;
       if (loc) {
-        // contoh Location: /device.htm?id=1234&tabid=1
         const m = /id=(\d+)/.exec(loc);
         if (m) newDeviceId = m[1];
       }
     } catch (e) {
-      // kalau axios otomatis follow redirect/atau header tak ada, lanjut fallback cari pakai table.json
-      // NOTE: tetap lanjut ke fallback di bawah
+      console.warn("⚠️ Clone device redirect gagal:", e.message);
     }
 
-    // 1b) Fallback: cari device baru berdasar parent + name
+    // 2) Fallback cari device
     if (!newDeviceId) {
-      const listUrl = `${PRTG_HOST}/api/table.json`;
-      const listParams = {
-        content: "devices",
-        columns: "objid,device,host,parentid",
-        // filter_* bekerja di /table.json; gunakan filter_parentid + filter_name
-        filter_parentid: parentId,
-        filter_name: name.trim(),
-        username: PRTG_USERNAME,
-        passhash: PRTG_PASSHASH,
-      };
-      const listResp = await axios.get(listUrl, { params: listParams });
-      const devs = listResp.data?.devices || [];
-      const found = devs.find((d) => String(d.device) === name.trim());
+      const listResp = await axios.get(`${PRTG_HOST}/api/table.json`, {
+        params: {
+          content: "devices",
+          columns: "objid,device,host,parentid",
+          filter_parentid: parentId,
+          filter_device: name.trim(),
+          username: PRTG_USERNAME,
+          passhash: PRTG_PASSHASH,
+        },
+      });
+      const found = listResp.data?.devices?.find((d) => String(d.device) === name.trim());
       if (found) newDeviceId = String(found.objid);
     }
 
@@ -126,20 +118,57 @@ app.post("/api/devices", async (req, res) => {
       return res.status(500).json({ error: "Gagal menentukan objid device baru setelah clone" });
     }
 
-    // 2) SET properti host (IPv4/DNS) pada device hasil clone
-    const setPropUrl = `${PRTG_HOST}/api/setobjectproperty.htm`;
-    const setPropParams = {
-      id: newDeviceId,
-      name: "host",          // nama properti 'IPv4 Address/DNS Name'
-      value: host.trim(),
-      username: PRTG_USERNAME,
-      passhash: PRTG_PASSHASH,
-    };
-    await axios.get(setPropUrl, { params: setPropParams });
+    // 3) Tunggu valid
+    await new Promise(r => setTimeout(r, 3000));
 
-    // (Opsional) kamu bisa set properti lain, mis. credentials atau tags, dengan setobjectproperty.htm yang sama
+    // 4) Set host
+    await axios.get(`${PRTG_HOST}/api/setobjectproperty.htm`, {
+      params: {
+        id: newDeviceId,
+        name: "host",
+        value: host.trim(),
+        username: PRTG_USERNAME,
+        passhash: PRTG_PASSHASH,
+      },
+    });
 
-    // 3) (Opsional) Simpan ke DB lokal kamu, kalau memang diperlukan
+    // 5) Cek parent group status
+    const parentResp = await axios.get(`${PRTG_HOST}/api/table.json`, {
+      params: {
+        content: "groups",
+        columns: "objid,group,status,message_raw",
+        filter_objid: parentId,
+        username: PRTG_USERNAME,
+        passhash: PRTG_PASSHASH,
+      },
+    });
+
+    const parentInfo = parentResp.data?.groups?.[0];
+    if (parentInfo && /paused/i.test(parentInfo.message_raw || "")) {
+      console.log(`⚠️ Parent group ${parentId} masih paused → auto resume`);
+      await axios.get(`${PRTG_HOST}/api/pause.htm`, {
+        params: {
+          id: parentId,
+          action: 0,
+          recurse: 1,
+          username: PRTG_USERNAME,
+          passhash: PRTG_PASSHASH,
+        },
+      });
+    }
+
+    // 6) Resume device baru
+    await axios.get(`${PRTG_HOST}/api/pause.htm`, {
+      params: {
+        id: newDeviceId,
+        action: 0,
+        recurse: 1,
+        username: PRTG_USERNAME,
+        passhash: PRTG_PASSHASH,
+      },
+    });
+
+    // 7) Save ke DB
     let deviceDb = null;
     try {
       deviceDb = await prisma.device.create({
@@ -147,26 +176,28 @@ app.post("/api/devices", async (req, res) => {
           name: name.trim(),
           host: host.trim(),
           prtgId: newDeviceId,
+          userId: userId,
+          parentId: parentId,
+          status: 0,
         },
       });
-    } catch (e) {
-      // lewati kalau tabel/device model opsional
+    } catch (dbErr) {
+      console.error("❌ Error saving device to DB:", dbErr.message);
     }
 
     return res.json({
       success: true,
-      message: "Device created via clone + host set",
+      message: "Device created + auto resume (parent & child)",
       objectId: newDeviceId,
       device: deviceDb,
     });
   } catch (error) {
-    console.error("Error creating device via clone:", error?.response?.data || error.message);
+    console.error("❌ Error creating device:", error?.response?.data || error.message);
     return res.status(500).json({
       error: "Failed to create device: " + (error?.response?.data || error.message),
     });
   }
 });
-
 
 
 // Get devices
@@ -187,46 +218,102 @@ app.get("/api/devices", async (req, res) => {
   }
 });
 
-// Update device
-app.put("/api/devices/:id", async (req, res) => {
-  const { id } = req.params;
-  const { newName } = req.body;
-  if (!newName) return res.status(400).json({ error: "New name is required" });
+// Get devices milik user tertentu
+app.get("/api/devices/user/:userId", async (req, res) => {
+  const { userId } = req.params;
   try {
-    const url = `${PRTG_HOST}/api/setobjectproperty.htm`;
-    const params = {
-      id,
-      name: "name",
-      value: newName.trim(),
-      username: PRTG_USERNAME,
-      passhash: PRTG_PASSHASH,
-    };
-    const response = await axios.get(url, { params });
-    res.json({ success: true, result: response.data });
+    const devices = await prisma.device.findMany({
+      where: { userId },
+      include: { sensors: true },
+    });
+
+    const mappedDevices = devices.map(d => ({
+      id: d.id,               // UUID device
+      objid: d.prtgId,        // PRTG ID
+      name: d.name,
+      host: d.host || "-",
+      parentid: d.parentId || "",
+      status: d.status ?? 0,
+    }));
+
+    res.json(mappedDevices);
   } catch (error) {
-    console.error("Error updating device:", error.message);
+    console.error("Error fetching user devices:", error);
+    res.status(500).json({ error: "Failed to fetch devices" });
+  }
+});
+
+
+app.patch("/api/devices/:id", async (req, res) => {
+  const { id } = req.params;
+  const { name } = req.body;
+
+  if (!name) return res.status(400).json({ error: "New name is required" });
+
+  try {
+    const device = await prisma.device.findUnique({ where: { id } });
+    if (!device || !device.prtgId) {
+      return res.status(404).json({ error: "Device not found or prtgId missing" });
+    }
+
+    const url = `${process.env.PRTG_HOST}/api/setobjectproperty.htm`;
+    const params = {
+      id: device.prtgId,
+      name: "name",
+      value: name.trim(),
+      username: process.env.PRTG_USERNAME,
+      passhash: process.env.PRTG_PASSHASH,
+    };
+
+    const response = await axios.get(url, { params });
+    const resultText = typeof response.data === "string" ? response.data : "OK";
+
+    const updated = await prisma.device.update({
+      where: { id },
+      data: { name: name.trim() },
+    });
+
+    res.json({ success: true, device: updated, raw: resultText });
+  } catch (error) {
+    console.error("❌ Error updating device:", error.response?.data || error.message);
     res.status(500).json({ error: "Failed to update device" });
   }
 });
 
-// Delete device
-app.delete("/api/devices/:id", async (req, res) => {
-  const { id } = req.params;
+
+
+app.delete("/api/devices/:prtgId", async (req, res) => {
+  const { prtgId } = req.params;
+
   try {
-    const url = `${PRTG_HOST}/api/deleteobject.htm`;
-    const params = {
-      id,
+    // cari device di DB berdasarkan prtgId
+    const device = await prisma.device.findFirst({ where: { prtgId } });
+    if (!device) {
+      return res.status(404).json({ error: "Device tidak ditemukan di DB" });
+    }
+
+    // hapus dari PRTG
+    const delUrl = `${PRTG_HOST}/api/deleteobject.htm`;
+    const delParams = {
+      id: device.prtgId,
       approve: 1,
       username: PRTG_USERNAME,
       passhash: PRTG_PASSHASH,
     };
-    const response = await axios.get(url, { params });
-    res.json({ success: true, result: response.data });
+    await axios.get(delUrl, { params: delParams });
+
+    // hapus dari DB
+    await prisma.device.delete({ where: { id: device.id } });
+
+    return res.json({ success: true, message: "Device deleted from PRTG & DB" });
   } catch (error) {
-    console.error("Error deleting device:", error.message);
-    res.status(500).json({ error: "Failed to delete device" });
+    console.error("❌ Error deleting device:", error?.response?.data || error.message);
+    return res.status(500).json({ error: "Failed to delete device: " + (error?.response?.data || error.message) });
   }
 });
+
+
+
 
 // Get groups
 app.get("/api/groups", async (req, res) => {
@@ -250,10 +337,15 @@ app.get("/api/groups", async (req, res) => {
 app.post("/login", async (req, res) => {
   const { username, password, userAgent } = req.body;
   try {
-    const user = await prisma.user.findUnique({ where: { username } });
-    if (!user) return res.status(401).json({ error: "User not found" });
+    const user = await prisma.user.findUnique({
+      where: { username },
+      include: {
+        subscriptionProfile: true, // ambil data langganan user
+      },
+    });
+    if (!user) return res.status(401).json({ error: "User  not found" });
     if (!user.password) {
-      return res.status(401).json({ error: "User has no password set" });
+      return res.status(401).json({ error: "User  has no password set" });
     }
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) return res.status(401).json({ error: "Invalid credentials" });
@@ -273,12 +365,14 @@ app.post("/login", async (req, res) => {
       name: user.username,
       email: user.email ?? "",
       role: user.role,
+      plan: user.subscriptionProfile?.plan || "free", // kirim plan user
     });
   } catch (error) {
     console.error("Login error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
 
 /* ==================== LOGOUT ==================== */
 app.post("/logout", async (req, res) => {
@@ -398,13 +492,198 @@ app.post("/api/activate", async (req, res) => {
 /* ==================== SENSOR DATA ==================== */
 app.get("/api/sensors", async (req, res) => {
   try {
-    const sensors = await prisma.sensors.findMany();
+    const sensors = await prisma.Sensor.findMany();
     res.json(sensors);
   } catch (error) {
     console.error("Error fetching sensors:", error);
     res.status(500).json({ error: "Failed to fetch sensors" });
   }
 });
+
+// Get sensors milik user tertentu (opsional, jika ingin endpoint terpisah)
+app.get("/api/sensors/user/:userId", async (req, res) => {
+  const { userId } = req.params;
+  try {
+    // Ambil semua sensor yang device-nya milik user tersebut
+    const sensors = await prisma.Sensor.findMany({
+      where: {
+        device: {
+          userId,
+        },
+      },
+    });
+    res.json(sensors);
+  } catch (error) {
+    console.error("Error fetching user sensors:", error);
+    res.status(500).json({ error: "Failed to fetch sensors" });
+  }
+});
+
+app.post("/api/sensors", async (req, res) => {
+  const { name, type, deviceId, userId } = req.body;
+
+  if (!name || !type || !deviceId || !userId) {
+    return res.status(400).json({ error: "name, type, deviceId, userId wajib diisi" });
+  }
+
+  try {
+    const device = await prisma.device.findUnique({ where: { id: deviceId } });
+    if (!device || !device.prtgId) {
+      return res.status(400).json({ error: "Device tidak ditemukan atau prtgId tidak tersedia" });
+    }
+
+    // 1. Tambahkan sensor di PRTG
+    await axios.get(`${process.env.PRTG_HOST}/addsensor5.htm`, {
+      params: {
+        id: device.prtgId,
+        name_: name,
+        sensortype: type,
+        username: process.env.PRTG_USERNAME,
+        passhash: process.env.PRTG_PASSHASH,
+      },
+      maxRedirects: 0,
+      validateStatus: (status) => status >= 200 && status < 400,
+    });
+
+    // 2. Ambil sensor terbaru dari device
+    const listResp = await axios.get(`${process.env.PRTG_HOST}/api/table.json`, {
+      params: {
+        content: "sensors",
+        columns: "objid,sensor,device",
+        filter_device: device.name,
+        username: process.env.PRTG_USERNAME,
+        passhash: process.env.PRTG_PASSHASH,
+      },
+    });
+
+    const sensors = listResp.data?.sensors || [];
+    const found = sensors.find((s) => s.sensor === name);
+
+    if (!found) {
+      return res.status(500).json({ error: "Gagal menemukan sensor baru di PRTG" });
+    }
+
+    const prtgSensorId = String(found.objid);
+
+    // 3. Simpan sensor ke database
+    const sensor = await prisma.sensor.create({
+      data: {
+        name,
+        type,
+        deviceId,
+        userId,
+        prtgId: prtgSensorId, // ✅ pasti sensor ID, bukan device ID
+        status: "Up",
+      },
+    });
+
+    res.json({ success: true, sensor });
+  } catch (error) {
+    console.error("Error creating sensor:", error.response?.data || error.message);
+    res.status(500).json({ error: "Failed to create sensor" });
+  }
+});
+
+
+
+app.put("/api/sensors/:id", async (req, res) => {
+  const { id } = req.params;
+  const { name, status } = req.body;
+
+  try {
+    const sensor = await prisma.sensor.findUnique({ where: { id } });
+    if (!sensor) return res.status(404).json({ error: "Sensor not found" });
+
+    // Update ke PRTG
+    if (name) {
+      await axios.get(`${process.env.PRTG_HOST}/api/setobjectproperty.htm`, {
+        params: {
+          id: sensor.prtgId,
+          name: "name",
+          value: name,
+          username: process.env.PRTG_USERNAME,
+          passhash: process.env.PRTG_PASSHASH,
+        },
+      });
+    }
+
+    // Update DB
+    const updated = await prisma.sensor.update({
+      where: { id },
+      data: { name: name || sensor.name, status: status || sensor.status },
+    });
+
+    res.json({ success: true, sensor: updated });
+  } catch (error) {
+    console.error("Error updating sensor:", error);
+    res.status(500).json({ error: "Failed to update sensor" });
+  }
+});
+
+app.delete("/api/sensors/:id", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // 1. Cari sensor di DB
+    const sensor = await prisma.sensor.findUnique({ where: { id } });
+    if (!sensor) return res.status(404).json({ error: "Sensor not found" });
+
+    // 2. Hapus sensor di PRTG (pastikan approve=1 biar langsung hapus)
+    await axios.get(`${process.env.PRTG_HOST}/deleteobject.htm`, {
+      params: {
+        id: sensor.prtgId, // ✅ ini sensor.objid yang valid, bukan deviceId
+        approve: 1,
+        username: process.env.PRTG_USERNAME,
+        passhash: process.env.PRTG_PASSHASH,
+      },
+    });
+
+    // 3. Hapus dari DB
+    await prisma.sensor.delete({ where: { id } });
+
+    res.json({ success: true, message: `Sensor ${sensor.name} (${sensor.id}) deleted` });
+  } catch (error) {
+    console.error("❌ Error deleting sensor:", error.response?.data || error.message);
+    res.status(500).json({ error: "Failed to delete sensor" });
+  }
+});
+
+
+app.get("/api/sensor-templates", async (req, res) => {
+  try {
+    const prtgResponse = await axios.get(
+      `${process.env.PRTG_HOST}/api/sensortypes.json`,
+      {
+        params: {
+          username: process.env.PRTG_USERNAME,
+          passhash: process.env.PRTG_PASSHASH,
+        },
+      }
+    );
+
+    res.json(prtgResponse.data.sensortypes);
+  } catch (error) {
+    console.error("Error fetching sensor templates:", error);
+    res.status(500).json({ error: "Failed to fetch sensor templates" });
+  }
+});
+
+
+app.get("/api/devices/user/:userId", async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const devices = await prisma.device.findMany({
+      where: { userId },
+      select: { id: true, name: true, prtgId: true },
+    });
+    res.json(devices);
+  } catch (error) {
+    console.error("Error fetching user devices:", error);
+    res.status(500).json({ error: "Failed to fetch devices" });
+  }
+});
+
+
 
 app.get("/api/sensor_logs", async (req, res) => {
   try {

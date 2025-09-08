@@ -33,6 +33,6 @@
     "app/ticket/page.jsx",
     "app/sensor/page.jsx",
     "app/api/auth/[...nextauth]/route.js"
-  ],
+, "app/sensor-management/page.tsx"  ],
   "exclude": ["node_modules"]
 }

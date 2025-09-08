@@ -1,28 +1,47 @@
 "use client";
 
 import { useState } from "react";
-import { signIn } from "next-auth/react";
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
   const handleLogin = async (e) => {
     e.preventDefault();
     setError("");
+    setLoading(true);
 
-    const result = await signIn("credentials", {
-      redirect: false,
-      username,
-      password,
-      callbackUrl: "/dashboard",
-    });
+    try {
+      const res = await fetch("http://localhost:3001/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
 
-    if (result?.error) {
-      setError("Username atau password salah");
-    } else {
+      const data = await res.json();
+
+      if (!res.ok) {
+        setError(data.error || "Login gagal");
+        setLoading(false);
+        return;
+      }
+
+      // Simpan user info ke localStorage/sessionStorage (atau state management)
+      localStorage.setItem("user", JSON.stringify({
+        id: data.id,
+        username: data.name,
+        email: data.email,
+        role: data.role,
+        plan: data.plan || "free",
+      }));
+
+      // Redirect ke dashboard
       window.location.href = "/dashboard";
+    } catch (err) {
+      setError("Terjadi kesalahan jaringan");
+      setLoading(false);
     }
   };
 
@@ -45,6 +64,7 @@ export default function LoginPage() {
               placeholder="Masukkan username"
               className="w-full px-4 py-2 bg-[#122132] text-white rounded-md border border-[#1C2A3A] focus:outline-none focus:ring-2 focus:ring-blue-500"
               required
+              autoComplete="username"
             />
           </div>
           <div className="mb-6">
@@ -56,13 +76,15 @@ export default function LoginPage() {
               placeholder="Masukkan password"
               className="w-full px-4 py-2 bg-[#122132] text-white rounded-md border border-[#1C2A3A] focus:outline-none focus:ring-2 focus:ring-blue-500"
               required
+              autoComplete="current-password"
             />
           </div>
           <button
             type="submit"
-            className="w-full bg-[#183D74] hover:bg-[#285193] text-white py-2 rounded-md transition duration-200"
+            disabled={loading}
+            className="w-full bg-[#183D74] hover:bg-[#285193] text-white py-2 rounded-md transition duration-200 disabled:opacity-50"
           >
-            Masuk
+            {loading ? "Loading..." : "Masuk"}
           </button>
         </form>
       </div>
