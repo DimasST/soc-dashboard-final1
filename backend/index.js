@@ -286,13 +286,13 @@ app.delete("/api/devices/:prtgId", async (req, res) => {
   const { prtgId } = req.params;
 
   try {
-    // cari device di DB berdasarkan prtgId
+    // cari device di DB
     const device = await prisma.device.findFirst({ where: { prtgId } });
     if (!device) {
       return res.status(404).json({ error: "Device tidak ditemukan di DB" });
     }
 
-    // hapus dari PRTG
+    // coba hapus di PRTG
     const delUrl = `${PRTG_HOST}/api/deleteobject.htm`;
     const delParams = {
       id: device.prtgId,
@@ -300,15 +300,25 @@ app.delete("/api/devices/:prtgId", async (req, res) => {
       username: PRTG_USERNAME,
       passhash: PRTG_PASSHASH,
     };
-    await axios.get(delUrl, { params: delParams });
 
-    // hapus dari DB
+    try {
+      await axios.get(delUrl, { params: delParams });
+    } catch (err) {
+      const xmlError = err?.response?.data;
+      if (xmlError?.includes("There is no object with the specified ID")) {
+        console.warn(`⚠️ Device #${device.prtgId} tidak ada di PRTG, lanjut hapus DB saja.`);
+      } else {
+        throw err; // kalau error lain, lempar
+      }
+    }
+
+    // hapus di DB (cascade akan beresin sensor + logs)
     await prisma.device.delete({ where: { id: device.id } });
 
-    return res.json({ success: true, message: "Device deleted from PRTG & DB" });
+    return res.json({ success: true, message: "✅ Device deleted from DB (and PRTG if existed)" });
   } catch (error) {
-    console.error("❌ Error deleting device:", error?.response?.data || error.message);
-    return res.status(500).json({ error: "Failed to delete device: " + (error?.response?.data || error.message) });
+    console.error("❌ Error deleting device:", error.message);
+    return res.status(500).json({ error: "Failed to delete device: " + error.message });
   }
 });
 
@@ -683,50 +693,141 @@ app.get("/api/devices/user/:userId", async (req, res) => {
   }
 });
 
-
-
-app.get("/api/sensor_logs", async (req, res) => {
+/* ==================== SYNC ALL SENSORS ==================== */
+app.post("/api/sensors/sync", async (req, res) => {
   try {
-    const logs = await prisma.sensor_logs.findMany();
+    const prtgRes = await fetch(
+      "http://PRTG_SERVER/api/table.json?content=sensors&output=json&username=YOUR_USER&password=YOUR_PASS"
+    );
+    const prtgData = await prtgRes.json();
+
+    if (!prtgData?.sensors) {
+      return res.status(400).json({ error: "Tidak ada data sensor dari PRTG" });
+    }
+
+    for (const s of prtgData.sensors) {
+      const existing = await prisma.sensor.findUnique({
+        where: { prtgId: String(s.objid) },
+      });
+
+      if (existing) {
+        await prisma.sensor.update({
+          where: { id: existing.id },
+          data: {
+            status: s.status_raw?.toString() ?? "unknown",
+            lastValue: s.lastvalue ?? "-",
+            message: s.message ?? null,
+          },
+        });
+
+        await prisma.sensorLog.create({
+          data: {
+            value: String(s.lastvalue ?? "-"),
+            sensorId: existing.id,
+          },
+        });
+      }
+    }
+
+    res.json({ message: "Sync sensors selesai" });
+  } catch (error) {
+    console.error("Error sync sensor:", error);
+    res.status(500).json({ error: "Gagal sync sensor dari PRTG" });
+  }
+});
+
+/* ==================== SENSOR STATUS PER USER ==================== */
+app.get("/api/sensors/status/:userId", async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    const sensors = await prisma.sensor.findMany({
+      where: { userId },
+      include: {
+        device: true,
+        logs: {
+          orderBy: { createdAt: "desc" },
+          take: 1,
+        },
+      },
+    });
+
+    const result = sensors.map((s) => ({
+      id: s.id,
+      name: s.name,
+      type: s.type,
+      status: s.status,
+      lastValue: s.lastValue,
+      message: s.message,
+      deviceName: s.device.name,
+      deviceId: s.device.id,
+      lastLog: s.logs[0]
+        ? { value: s.logs[0].value, createdAt: s.logs[0].createdAt }
+        : null,
+    }));
+
+    res.json(result);
+  } catch (error) {
+    console.error("Error fetching sensor status per user:", error);
+    res.status(500).json({ error: "Gagal ambil status sensor user" });
+  }
+});
+
+/* ==================== SENSOR LOG HISTORY ==================== */
+app.get("/api/sensors/:sensorId/logs", async (req, res) => {
+  const { sensorId } = req.params;
+
+  try {
+    const logs = await prisma.sensorLog.findMany({
+      where: { sensorId },
+      orderBy: { createdAt: "desc" },
+      take: 50, // limit biar gak berat (bisa diubah sesuai kebutuhan)
+    });
     res.json(logs);
   } catch (error) {
     console.error("Error fetching sensor logs:", error);
-    res.status(500).json({ error: "Failed to fetch sensor logs" });
+    res.status(500).json({ error: "Gagal ambil histori sensor" });
   }
 });
+
+/* ==================== DEVICES + SENSORS PER USER ==================== */
+app.get("/api/devices/:userId", async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    const devices = await prisma.device.findMany({
+      where: { userId },
+      include: {
+        sensors: {
+          include: {
+            logs: {
+              orderBy: { createdAt: "desc" },
+              take: 1,
+            },
+          },
+        },
+      },
+    });
+
+    res.json(devices);
+  } catch (error) {
+    console.error("Error fetching devices:", error);
+    res.status(500).json({ error: "Gagal ambil devices" });
+  }
+});
+
 
 /* ==================== USER LOGS ==================== */
 app.get("/api/user-logs", async (req, res) => {
   try {
     const logs = await prisma.userLog.findMany({
       orderBy: { createdAt: "desc" },
+      include: { user: true }, // optional, biar tau username
     });
     res.json(logs);
   } catch (error) {
     console.error("Error fetching user logs:", error);
     res.status(500).json({ error: "Failed to fetch user logs" });
-  }
-});
-
-/* ==================== SLA LOGS ==================== */
-app.get("/api/sla-logs", async (req, res) => {
-  try {
-    const logs = await prisma.slaLogs.findMany();
-    res.json(logs);
-  } catch (err) {
-    res.status(500).json({ error: "Gagal ambil SLA Logs" });
-  }
-});
-
-app.post("/api/sla-logs", async (req, res) => {
-  try {
-    const { name, value } = req.body;
-    const newLog = await prisma.slaLogs.create({
-      data: { name, value },
-    });
-    res.json(newLog);
-  } catch (err) {
-    res.status(500).json({ error: "Gagal tambah SLA Log" });
   }
 });
 
@@ -1156,3 +1257,50 @@ app.get("/api/payment/status/:orderId", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`✅ Server backend berjalan di http://localhost:${PORT}`);
 });
+
+import cron from "node-cron";
+
+// scheduler ambil data PRTG
+cron.schedule("*/2 * * * *", async () => {
+  console.log("⏳ Ambil data sensor dari PRTG...");
+  try {
+    const sensors = await prisma.sensor.findMany();
+
+    for (const sensor of sensors) {
+      const response = await axios.get(
+        `${process.env.PRTG_HOST}/api/getsensordetails.json`,
+        {
+          params: {
+            id: sensor.prtgId,
+            username: process.env.PRTG_USERNAME,
+            passhash: process.env.PRTG_PASSHASH,
+          },
+        }
+      );
+
+      const prtgData = response.data.sensordata;
+
+      await prisma.sensorLog.create({
+        data: {
+          sensorId: sensor.id,
+          value: parseFloat(prtgData.lastvalue_raw) || 0,
+          message: prtgData.lastmessage || "",
+        },
+      });
+
+      await prisma.sensor.update({
+        where: { id: sensor.id },
+        data: {
+          lastValue: parseFloat(prtgData.lastvalue_raw) || 0,
+          message: prtgData.lastmessage || "",
+          status: String(prtgData.status_raw || "0"),
+        },
+      });
+    }
+
+    console.log("✅ Data sensor berhasil diperbarui");
+  } catch (err) {
+    console.error("❌ Error ambil data PRTG:", err.message);
+  }
+});
+

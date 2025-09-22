@@ -4,7 +4,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      =env("DATABASE_URL")
+  url      = env("DATABASE_URL")
 }
 
 model User {
@@ -25,7 +25,7 @@ model User {
 
   logs            UserLog[]
   subscriptionProfile SubscriptionProfile?  // ⬅️ hanya satu aktif
-  devices         Device[] // ⬅️ relasi ke device     
+  devices         Device[]     
   sensor          Sensor[]            
 }
 
@@ -48,20 +48,19 @@ model SubscriptionProfile {
 
 model Device {
   id        String   @id @default(cuid())
-  prtgId    String?  // objid dari PRTG
+  prtgId    String?  
   name      String
   type      String?
-  host      String?   // 👈 tambahin
-  parentId  String?   // 👈 tambahin
+  host      String?   
+  parentId  String?   
   status    Int? 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Relasi ke user
   userId String
   user   User @relation(fields: [userId], references: [id])
 
-  sensors Sensor[]
+  sensors Sensor[] @relation("DeviceSensors") // ⬅️ kasih nama relasi
 }
 
 model Sensor {
@@ -71,23 +70,24 @@ model Sensor {
   deviceId  String
   userId    String
   prtgId    String
-  status    String
-  lastValue String?
+  status    String?
+  lastValue Float?
   message   String?
   createdAt DateTime @default(now())
-  logs      SensorLog[]
-  device    Device   @relation(fields: [deviceId], references: [id])
+
+  logs      SensorLog[] @relation("SensorLogs") // ⬅️ kasih nama relasi
+  device    Device   @relation("DeviceSensors", fields: [deviceId], references: [id], onDelete: Cascade) // ⬅️ cascade
   user      User     @relation(fields: [userId], references: [id])
 }
 
-
 model SensorLog {
-  id        Int      @id @default(autoincrement())
-  value     String?
+  id        String   @id @default(cuid())
+  sensorId  String
+  value     Float
+  message   String?   
   createdAt DateTime @default(now())
 
-  sensorId  String
-  sensor    Sensor @relation(fields: [sensorId], references: [id])
+  sensor    Sensor   @relation("SensorLogs", fields: [sensorId], references: [id], onDelete: Cascade) // ⬅️ cascade
 }
 
 model UserLog {
@@ -107,7 +107,7 @@ model Payment {
   orderId   String   @unique
   package   String
   price     Int
-  status    String   @default("pending") // pending | paid | expired
+  status    String   @default("pending")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

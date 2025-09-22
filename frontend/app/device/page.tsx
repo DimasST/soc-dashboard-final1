@@ -1,21 +1,22 @@
-// device/page.tsx
 'use client';
 
 import { useEffect, useState } from 'react';
 import { CheckCircle, AlertTriangle, XCircle } from 'lucide-react';
 
 type Device = {
-  objid: string;
-  device: string;
-  host: string;
-  parentid: string;
-  status: number; // 0=Up, 1=Warning, 2=Down (PRTG status)
+  id: string;       // UUID device dari DB
+  prtgId?: string;  // PRTG ID (objid)
+  name: string;
+  host?: string;
+  parentId?: string;
+  status?: number; // 0=Up, 1=Warning, 2=Down (PRTG status)
 };
 
 export default function DevicePage() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [userId, setUserId] = useState<string | null>(null);
 
   const statusMap: Record<
     number,
@@ -38,11 +39,11 @@ export default function DevicePage() {
     },
   };
 
-  const fetchDevices = async () => {
+  const fetchDevices = async (uid: string) => {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('http://localhost:3001/api/devices');
+      const res = await fetch(`http://localhost:3001/api/devices/${uid}`);
       if (!res.ok) throw new Error('Failed to fetch devices');
       const data: Device[] = await res.json();
       setDevices(data);
@@ -54,7 +55,21 @@ export default function DevicePage() {
   };
 
   useEffect(() => {
-    fetchDevices();
+    // Ambil user dari localStorage (hasil login)
+    const storedUser  = localStorage.getItem('user');
+    if (storedUser ) {
+      const user = JSON.parse(storedUser );
+      if (user?.id) {
+        setUserId(user.id);
+        fetchDevices(user.id);
+      } else {
+        setError('User  ID not found, please login');
+      }
+    } else {
+      setError('User  not logged in');
+      // Optional: redirect ke login page
+      // window.location.href = '/login';
+    }
   }, []);
 
   return (
@@ -77,32 +92,29 @@ export default function DevicePage() {
               </tr>
             </thead>
             <tbody>
-              {devices.map(({ objid, device, host, status }) => {
-                const st = statusMap[status] || {
+              {devices.map(({ id, prtgId, name, host, status }) => {
+                const st = statusMap[status ?? 0] || {
                   label: 'Unknown',
                   icon: null,
                   color: 'text-gray-400',
                 };
                 return (
                   <tr
-                    key={objid}
+                    key={id}
                     className="border-b border-gray-700 hover:bg-[#334155]"
                   >
                     <td className={`py-3 px-4 flex items-center gap-2 ${st.color}`}>
                       {st.icon}
                       <span>{st.label}</span>
                     </td>
-                    <td className="py-3 px-4">{device}</td>
-                    <td className="py-3 px-4 text-gray-300">{host}</td>
+                    <td className="py-3 px-4">{name}</td>
+                    <td className="py-3 px-4 text-gray-300">{host ?? '-'}</td>
                   </tr>
                 );
               })}
               {devices.length === 0 && !loading && (
                 <tr>
-                  <td
-                    colSpan={3}
-                    className="py-4 text-center text-gray-400"
-                  >
+                  <td colSpan={3} className="py-4 text-center text-gray-400">
                     No devices found
                   </td>
                 </tr>
